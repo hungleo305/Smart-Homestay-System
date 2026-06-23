@@ -3,11 +3,10 @@ import { signOut } from "firebase/auth";
 import { ref, onValue, set } from "firebase/database";
 import { auth, db } from "./firebase";
 import { useNavigate } from "react-router-dom";
-// Nhớ cài thư viện này bên app Admin: npm install react-hot-toast
 import toast, { Toaster } from 'react-hot-toast';
 import { 
   Home, Users, Key, TrendingUp, LogOut, AlertTriangle, 
-  Search, RefreshCw, X, Wifi, WifiOff, Shield, ShieldAlert, Sliders 
+  Search, RefreshCw, X, Wifi, WifiOff, Shield, ShieldAlert, Sliders, Ban 
 } from "lucide-react";
 
 export default function Dashboard() {
@@ -16,7 +15,6 @@ export default function Dashboard() {
   const [roomsStatus, setRoomsStatus] = useState([]); 
   const [systemAlerts, setSystemAlerts] = useState([]); 
   
-  // Ref để lưu trữ những phòng ĐÃ BÁO ĐỘNG (Chống spam hú còi liên tục)
   const notifiedRooms = useRef(new Set());
 
   const [controlModal, setControlModal] = useState({
@@ -66,49 +64,40 @@ export default function Dashboard() {
       for (const [roomId, roomData] of Object.entries(roomsData)) {
         const roomLabel = roomId.replace('room_', 'Phòng ').replace('_', ' ');
         
-        // 1. KIỂM TRA ONLINE/OFFLINE
         const lastPing = roomData.last_ping || 0;
         const isOnline = lastPing > 0 && (currentTime - lastPing < 180); 
         if (!isOnline) {
           newAlerts.push({ type: "OFFLINE", text: `${roomLabel} bị mất kết nối với phần cứng!` });
         }
 
-        // 2. XỬ LÝ CẢNH BÁO DÒ MÃ (CÓ THÔNG BÁO NỔI & HÚ CÒI)
         const alertStatus = roomData.canh_bao || "AN_TOAN";
         if (alertStatus === "DO_MA_PIN") {
           newAlerts.push({ type: "DANGER", text: `Phát hiện hành vi DÒ MÃ PIN liên tiếp tại ${roomLabel}!` });
           
-          // Kiểm tra xem đã báo động cho phòng này chưa để tránh spam
           if (!notifiedRooms.current.has(roomId)) {
-            // A. Hiện Bong bóng Toast trong web
             toast.error(`CẢNH BÁO: Phát hiện dò mã PIN tại ${roomLabel}!`, {
               duration: 10000,
               position: 'top-right',
               style: { padding: '16px', background: '#7f1d1d', color: '#fff', fontWeight: 'bold' },
             });
 
-            // B. Phát âm thanh còi hú
             const audio = new Audio("https://actions.google.com/sounds/v1/alarms/digital_watch_alarm_long.ogg");
             audio.play().catch(() => {});
 
-            // C. Bắn thông báo đẩy của Hệ điều hành (Web Notification)
             if (Notification.permission === "granted") {
               new Notification("🚨 CẢNH BÁO AN NINH KHẨN CẤP", {
                 body: `Phần cứng tại ${roomLabel} đang bị dò mã số. Hệ thống đã khóa cứng!`,
                 icon: "https://cdn-icons-png.flaticon.com/512/564/564619.png",
-                silent: true // Tắt tiếng notification mặc định vì đã có còi hú ở trên
+                silent: true
               });
             }
 
-            // Ghi nhớ là đã báo động
             notifiedRooms.current.add(roomId);
           }
         } else {
-          // Xóa khỏi danh sách báo động nếu trạng thái đã an toàn
           notifiedRooms.current.delete(roomId);
         }
 
-        // 3. THU THẬP TRẠNG THÁI THIẾT BỊ
         extractedRooms.push({
           id: roomId,
           label: roomLabel,
@@ -119,7 +108,6 @@ export default function Dashboard() {
           rfidDisabled: roomData.rfid_disabled || false  
         });
 
-        // 4. THU THẬP DANH SÁCH ĐẶT PHÒNG
         const bookings = roomData.bookings || {};
         for (const [bookingId, b] of Object.entries(bookings)) {
           allGuests.push({
@@ -157,7 +145,6 @@ export default function Dashboard() {
   useEffect(() => {
     fetchGuestsData();
     
-    // Xin quyền hiển thị Thông báo hệ thống ngay khi Admin vào trang
     if ("Notification" in window) {
       if (Notification.permission !== "granted" && Notification.permission !== "denied") {
         Notification.requestPermission();
@@ -207,7 +194,6 @@ export default function Dashboard() {
     
     set(ref(db, `homestay/${controlModal.roomId}/remote_command`), "OPEN")
       .then(() => {
-        // Đồng thời reset luôn biến cảnh báo trên Firebase về AN_TOAN
         set(ref(db, `homestay/${controlModal.roomId}/canh_bao`), "AN_TOAN");
         
         toast.success("Đã kích hoạt mở chốt và xóa báo động!");
@@ -220,13 +206,30 @@ export default function Dashboard() {
       });
   };
 
+  const handleCancelPIN = (roomId, bookingId, guestName) => {
+    if (!window.confirm(`⚠️ Bạn có chắc chắn muốn VÔ HIỆU HÓA mã PIN của khách ${guestName} không?\n(Chức năng này dùng khi khách hủy phòng)`)) return;
+
+    const targetPath = `homestay/${roomId}/bookings/${bookingId}/pin`;
+    set(ref(db, targetPath), "CANCELED")
+      .then(() => toast.success(`Đã vô hiệu hóa PIN của ${guestName}!`))
+      .catch(err => toast.error("Lỗi khi vô hiệu hóa: " + err.message));
+  };
+
+  const handleGenerateNewPIN = (roomId, bookingId, guestName) => {
+    if (!window.confirm(`🔄 Bạn muốn cấp một mã PIN ngẫu nhiên mới cho khách ${guestName}?`)) return;
+
+    const newPIN = Math.floor(100000 + Math.random() * 900000).toString();
+    const targetPath = `homestay/${roomId}/bookings/${bookingId}/pin`;
+    
+    set(ref(db, targetPath), newPIN)
+      .then(() => toast.success(`Đã cấp PIN mới cho ${guestName}: ${newPIN}`, { duration: 8000 }))
+      .catch(err => toast.error("Lỗi khi cấp PIN mới: " + err.message));
+  };
+
   return (
     <div className="min-h-screen bg-[#1a1a1a] text-gray-200 p-6 font-sans relative">
-      
-      {/* KHAI BÁO COMPONENT TOAST BẮT BUỘC ĐỂ HIỆN BONG BÓNG */}
       <Toaster />
 
-      {/* 🛑 KHỐI BANNER THÔNG BÁO CẢNH BÁO NGUY HIỂM TỰ ĐỘNG */}
       {systemAlerts.length > 0 && (
         <div className="flex flex-col gap-3 mb-6">
           {systemAlerts.map((alert, idx) => (
@@ -245,7 +248,6 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* 🎛️ MODAL ĐIỀU KHIỂN BẢO MẬT PHÒNG TỪ XA */}
       {controlModal.isOpen && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 backdrop-blur-sm">
           <div className="bg-[#252525] p-6 rounded-xl border border-gray-700 w-[420px] shadow-2xl">
@@ -425,6 +427,7 @@ export default function Dashboard() {
                 <th className="pb-3 font-semibold">Giờ Check-in</th>
                 <th className="pb-3 font-semibold">Giờ Check-out</th>
                 <th className="pb-3 font-semibold">Trạng thái</th>
+                <th className="pb-3 font-semibold text-center">Thao tác</th>
               </tr>
             </thead>
             <tbody>
@@ -432,13 +435,16 @@ export default function Dashboard() {
                 guests.map((guest) => {
                   let trangThai = "Đã trả";
                   let colorClass = "text-gray-500"; 
+                  let canModify = false; // <-- CỜ KIỂM TRA ĐỂ ẨN/HIỆN NÚT
 
                   if (guest.startTime <= now && now <= guest.endTime) {
                     trangThai = "Đang ở";
                     colorClass = "text-green-400"; 
+                    canModify = true;
                   } else if (now < guest.startTime) {
                     trangThai = "Sắp nhận";
                     colorClass = "text-blue-400"; 
+                    canModify = true;
                   }
 
                   return (
@@ -446,7 +452,11 @@ export default function Dashboard() {
                       <td className="py-4 font-medium text-white">{guest.name}</td>
                       <td className="py-4 text-gray-400">{guest.phone}</td>
                       <td className="py-4 text-gray-400">{guest.roomLabel}</td>
-                      <td className="py-4 font-bold text-white tracking-widest">{guest.pin}</td>
+                      
+                      <td className={`py-4 font-bold tracking-widest ${guest.pin === "CANCELED" ? "text-red-500" : "text-white"}`}>
+                        {guest.pin}
+                      </td>
+
                       <td className="py-4 font-bold text-white">
                         {guest.price ? new Intl.NumberFormat('vi-VN').format(guest.price) + ' ₫' : '—'}
                       </td>
@@ -455,12 +465,36 @@ export default function Dashboard() {
                       <td className={`py-4 text-sm font-medium ${colorClass}`}>
                         {trangThai}
                       </td>
+                      
+                      <td className="py-4 text-center">
+                        {canModify ? (
+                          <div className="flex items-center justify-center gap-2">
+                            <button 
+                              onClick={() => handleGenerateNewPIN(guest.roomId, guest.bookingId, guest.name)}
+                              className="p-1.5 bg-blue-600/20 text-blue-400 hover:bg-blue-600 hover:text-white rounded transition-colors"
+                              title="Cấp lại PIN mới"
+                            >
+                              <RefreshCw size={16} />
+                            </button>
+                            <button 
+                              onClick={() => handleCancelPIN(guest.roomId, guest.bookingId, guest.name)}
+                              disabled={guest.pin === "CANCELED"}
+                              className="p-1.5 bg-red-600/20 text-red-400 hover:bg-red-600 hover:text-white rounded transition-colors disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-red-400"
+                              title="Hủy đơn / Vô hiệu hóa PIN"
+                            >
+                              <Ban size={16} />
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="text-gray-600 text-xs font-medium">—</span>
+                        )}
+                      </td>
                     </tr>
                   );
                 })
               ) : (
                 <tr>
-                  <td colSpan="8" className="py-8 text-center text-gray-500">
+                  <td colSpan="9" className="py-8 text-center text-gray-500">
                     Đang tải dữ liệu hoặc không có lịch sử khách hàng...
                   </td>
                 </tr>
