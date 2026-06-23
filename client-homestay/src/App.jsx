@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { ref, set, get, child, push } from "firebase/database";
+// IMPORT THÊM HÀM 'update'
+import { ref, set, get, child, push, update } from "firebase/database";
 import { database } from "./firebase";
 import emailjs from '@emailjs/browser'; 
 import './App.css';
@@ -31,31 +32,8 @@ function App() {
     const now = new Date();
     now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
     setMinDateTime(now.toISOString().slice(0, 16));
-
-    const autoCleanFirebase = async () => {
-      try {
-        const dbRef = ref(database);
-        const snapshot = await get(child(dbRef, 'homestay'));
-        if (snapshot.exists()) {
-          const allRooms = snapshot.val();
-          const currentTime = Math.floor(Date.now() / 1000);
-          
-          for (const roomId in allRooms) {
-            const roomData = allRooms[roomId];
-            if (roomData.bookings) {
-              for (const bookingId in roomData.bookings) {
-                const booking = roomData.bookings[bookingId];
-                if (booking.is_pin_active && booking.end_time && currentTime > booking.end_time) {
-                  set(ref(database, `homestay/${roomId}/bookings/${bookingId}/is_pin_active`), false);
-                  set(ref(database, `homestay/${roomId}/bookings/${bookingId}/pin`), "EXPIRED"); 
-                }
-              }
-            }
-          }
-        }
-      } catch (err) { console.error(err); }
-    };
-    autoCleanFirebase();
+    
+    // Đã xóa hàm autoCleanFirebase() ở đây vì khách vãng lai không có quyền dọn dẹp Database
   }, []);
 
   const goHome = () => { 
@@ -73,16 +51,18 @@ function App() {
     setBookedSlots([]);
 
     try {
-      const roomRef = ref(database, `homestay/${room.id}/bookings`);
+      // SỬA ĐƯỜNG DẪN: Chỉ đọc nhánh public_schedule thay vì bookings
+      const roomRef = ref(database, `homestay/${room.id}/public_schedule`);
       const snapshot = await get(roomRef);
       if (snapshot.exists()) {
-        const bookings = snapshot.val();
+        const scheduleData = snapshot.val();
         const currentTime = Math.floor(Date.now() / 1000);
         const activeSlots = [];
         
-        for (const key in bookings) {
-          const data = bookings[key];
-          if (data.is_pin_active && data.end_time > currentTime) {
+        for (const key in scheduleData) {
+          const data = scheduleData[key];
+          // Chỉ lấy những lịch chưa kết thúc
+          if (data.end_time > currentTime) {
             activeSlots.push({
               startStr: new Date(data.start_time * 1000).toLocaleString('vi-VN', { dateStyle: 'short', timeStyle: 'short' }),
               endStr: new Date(data.end_time * 1000).toLocaleString('vi-VN', { dateStyle: 'short', timeStyle: 'short' })
@@ -113,14 +93,16 @@ function App() {
     setIsProcessing(true);
 
     try {
-      const roomRef = ref(database, `homestay/${selectedRoom.id}/bookings`);
+      // SỬA ĐƯỜNG DẪN: Quét lịch trùng trên nhánh public_schedule
+      const roomRef = ref(database, `homestay/${selectedRoom.id}/public_schedule`);
       const snapshot = await get(roomRef);
 
       if (snapshot.exists()) {
-        const bookings = snapshot.val();
-        for (const key in bookings) {
-          const data = bookings[key];
-          if (data.is_pin_active && newStartTimeUnix < data.end_time && newEndTimeUnix > data.start_time) {
+        const scheduleData = snapshot.val();
+        for (const key in scheduleData) {
+          const data = scheduleData[key];
+          // Thuật toán kiểm tra trùng lịch
+          if (newStartTimeUnix < data.end_time && newEndTimeUnix > data.start_time) {
             const bookedStart = new Date(data.start_time * 1000).toLocaleString('vi-VN');
             const bookedEnd = new Date(data.end_time * 1000).toLocaleString('vi-VN');
             alert(`⚠️ Lỗi: Khoảng thời gian này bị trùng với một khách đã đặt từ ${bookedStart} đến ${bookedEnd}. Vui lòng chọn lịch khác!`);
@@ -145,9 +127,11 @@ function App() {
     const endTimeUnix = Math.floor(new Date(formData.checkOut).getTime() / 1000);
     const newPin = Math.floor(100000 + Math.random() * 900000).toString();
 
-    const newBookingRef = push(ref(database, `homestay/${selectedRoom.id}/bookings`));
+    // Lấy một ID duy nhất cho đơn đặt phòng mới
+    const newBookingKey = push(ref(database, `homestay/${selectedRoom.id}/bookings`)).key;
     
-    set(newBookingRef, {
+    // Gói dữ liệu BÍ MẬT (Chứa mã PIN, lưu vào nhánh bookings)
+    const secretBookingData = {
       customer_name: formData.name,
       customer_email: formData.email,
       customer_phone: formData.phone,
@@ -158,7 +142,21 @@ function App() {
       price: formData.totalPrice, 
       rfid_uid: "445EFA05",
       is_rfid_active: true
-    })
+    };
+
+    // Gói dữ liệu CÔNG KHAI (Chỉ chứa thời gian, lưu vào nhánh public_schedule)
+    const publicScheduleData = {
+      start_time: startTimeUnix,
+      end_time: endTimeUnix
+    };
+
+    // Tạo object updates để ĐẨY CÙNG LÚC vào 2 nhánh
+    const updates = {};
+    updates[`homestay/${selectedRoom.id}/bookings/${newBookingKey}`] = secretBookingData;
+    updates[`homestay/${selectedRoom.id}/public_schedule/${newBookingKey}`] = publicScheduleData;
+
+    // Ghi dữ liệu bằng hàm update()
+    update(ref(database), updates)
     .then(() => {
       const templateParams = {
         to_email: formData.email,
