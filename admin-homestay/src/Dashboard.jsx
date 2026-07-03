@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { signOut } from "firebase/auth";
+import { signOut, onAuthStateChanged } from "firebase/auth"; // Thêm onAuthStateChanged ở đây
 import { ref, onValue, set } from "firebase/database";
 import { auth, db } from "./firebase";
 import { useNavigate } from "react-router-dom";
@@ -15,6 +15,9 @@ export default function Dashboard() {
   const [roomsStatus, setRoomsStatus] = useState([]); 
   const [systemAlerts, setSystemAlerts] = useState([]); 
   
+  // Thêm state để kiểm soát trạng thái load của Firebase Auth
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+
   const notifiedRooms = useRef(new Set());
 
   const [controlModal, setControlModal] = useState({
@@ -143,8 +146,19 @@ export default function Dashboard() {
   };
 
   useEffect(() => {
-    fetchGuestsData();
-    
+    // ==== KHÚC NÀY ĐÃ ĐƯỢC SỬA ĐỂ FIX LỖI F5 ====
+    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        // Nếu đã có user (auth != null), mới bắt đầu gọi dữ liệu
+        setIsAuthLoading(false);
+        fetchGuestsData();
+      } else {
+        // Nếu không có user, đẩy về trang chủ (Login)
+        setIsAuthLoading(false);
+        navigate("/");
+      }
+    });
+
     if ("Notification" in window) {
       if (Notification.permission !== "granted" && Notification.permission !== "denied") {
         Notification.requestPermission();
@@ -154,7 +168,12 @@ export default function Dashboard() {
     const timer = setInterval(() => {
       setGuests(prevGuests => [...prevGuests]); 
     }, 60000);
-    return () => clearInterval(timer);
+    
+    // Dọn dẹp cả auth listener và timer khi component unmount
+    return () => {
+      unsubscribeAuth();
+      clearInterval(timer);
+    };
   }, []);
 
   const handleLogout = async () => {
@@ -162,6 +181,7 @@ export default function Dashboard() {
     navigate("/");
   };
 
+  // Các hàm chức năng xử lý sự kiện giữ nguyên như cũ
   const handleOpenControl = (room) => {
     setControlModal({
       isOpen: true,
@@ -226,6 +246,18 @@ export default function Dashboard() {
       .catch(err => toast.error("Lỗi khi cấp PIN mới: " + err.message));
   };
 
+  // MÀN HÌNH CHỜ HIỂN THỊ KHI F5 ĐỂ FIREBASE LOAD TOKEN
+  if (isAuthLoading) {
+    return (
+      <div className="min-h-screen bg-[#1a1a1a] flex flex-col items-center justify-center text-gray-300">
+        <RefreshCw size={40} className="animate-spin text-blue-500 mb-4" />
+        <h2 className="text-xl font-bold">Đang xác thực hệ thống an ninh...</h2>
+        <p className="text-sm mt-2 text-gray-500">Vui lòng chờ trong giây lát</p>
+      </div>
+    );
+  }
+
+  // Toàn bộ phần giao diện return chính giữ y nguyên
   return (
     <div className="min-h-screen bg-[#1a1a1a] text-gray-200 p-6 font-sans relative">
       <Toaster />
@@ -435,7 +467,7 @@ export default function Dashboard() {
                 guests.map((guest) => {
                   let trangThai = "Đã trả";
                   let colorClass = "text-gray-500"; 
-                  let canModify = false; // <-- CỜ KIỂM TRA ĐỂ ẨN/HIỆN NÚT
+                  let canModify = false; 
 
                   if (guest.startTime <= now && now <= guest.endTime) {
                     trangThai = "Đang ở";
