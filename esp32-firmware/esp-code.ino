@@ -131,7 +131,9 @@ void setup() {
   // 6. Cấu hình và kết nối Firebase
   config.api_key = API_KEY;
   config.database_url = DATABASE_URL;
-  config.signer.test_mode = true; // Dùng chế độ test để không cần xác thực token rườm rà
+  //config.signer.test_mode = true; // Dùng chế độ test để không cần xác thực token rườm rà
+  auth.user.email = "esp32@homestay.com"; 
+  auth.user.password = "123456";
   
   fbdo.setBSSLBufferSize(2048, 1024); // Cấp phát bộ nhớ đệm cho SSL
   fbdo.setResponseSize(2048);
